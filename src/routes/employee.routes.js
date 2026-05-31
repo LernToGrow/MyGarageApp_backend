@@ -19,6 +19,10 @@ router.get('/',                      listEmployees);
 router.post('/invite',               requirePermission('add_employee'),  inviteEmployee);
 router.patch('/:id/permissions',     requirePermission('edit_employee'), updatePermissions);
 router.patch('/:id/deactivate',      requirePermission('edit_employee'), deactivateEmployee);
-router.get('/:id/performance',       requirePermission('view_reports'),  getPerformance);
+// Allow self-performance lookup without view_reports permission
+router.get('/:id/performance', (req, res, next) => {
+  if (req.user._id.toString() === req.params.id) return next();
+  return requirePermission('view_reports')(req, res, next);
+}, getPerformance);
 
 module.exports = router;

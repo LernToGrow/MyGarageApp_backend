@@ -4,8 +4,8 @@ const bcrypt   = require('bcryptjs');
 const UserSchema = new mongoose.Schema({
   phone:       { type: String, required: true, unique: true },
   name:        { type: String, required: true },
-  role:        { type: String, enum: ['garage_owner', 'employee'], required: true },
-  garage_id:   { type: mongoose.Schema.Types.ObjectId, ref: 'Garage', required: true },
+  role:        { type: String, enum: ['garage_owner', 'employee', 'super_admin'], required: true },
+  garage_id:   { type: mongoose.Schema.Types.ObjectId, ref: 'Garage' },
   permissions: {
     type: [String],
     default: ['add_job', 'edit_job', 'manage_customers'],

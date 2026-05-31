@@ -56,14 +56,28 @@ async function createJob(req, res) {
 async function listJobs(req, res) {
   try {
     const garage_id = req.user.garage_id;
-    const { status, date, assigned_to, from, to } = req.query;
+    const { status, date, assigned_to, from, to, collected_by } = req.query;
 
     const query = { garage_id };
+
+    // Employees only see jobs assigned to or created by themselves
+    if (req.user.role === 'employee') {
+      query.$or = [{ assigned_to: req.user._id }, { created_by: req.user._id }];
+    } else if (assigned_to) {
+      query.assigned_to = assigned_to;
+    }
+
+    // Filter by who collected the payment (employee views their own payment history)
+    if (collected_by === 'me') {
+      query.collected_by = req.user._id;
+    } else if (collected_by) {
+      query.collected_by = collected_by;
+    }
+
     if (status) {
       const statuses = status.split(',').map(s => s.trim()).filter(Boolean);
       query.status = statuses.length === 1 ? statuses[0] : { $in: statuses };
     }
-    if (assigned_to) query.assigned_to = assigned_to;
 
     if (date) {
       const start = new Date(date);
@@ -104,6 +118,7 @@ async function getJob(req, res) {
       .populate('customer_id', 'name phone address language')
       .populate('bike_id')
       .populate('assigned_to', 'name phone')
+      .populate('collected_by', 'name')
       .populate('parts_used.part_id', 'name_en brand');
 
     if (!job) { res.status(404).json({ error: 'Job not found', code: 'JOB_NOT_FOUND' }); return; }
@@ -443,6 +458,14 @@ async function recordPayment(req, res) {
     job.balance_due    = balance_due;
     job.payment_status = payment_status;
     job.status         = payment_status === 'paid' ? 'paid' : 'done';
+    job.collected_by   = req.user._id;
+    if (req.user.role === 'garage_owner') {
+      job.remitted_to_admin = true;
+      job.remitted_at       = new Date();
+    } else {
+      job.remitted_to_admin = false;
+      job.remitted_at       = undefined;
+    }
     if (payment_status === 'paid') job.paid_at = new Date();
     await job.save();
 
@@ -566,6 +589,25 @@ async function deleteJob(req, res) {
   }
 }
 
+// PATCH /api/jobs/:id/remit  — admin confirms cash received from employee
+async function remitPayment(req, res) {
+  try {
+    const garage_id = req.user.garage_id;
+    const job = await Job.findOne({ _id: req.params.id, garage_id });
+    if (!job) { res.status(404).json({ error: 'Job not found', code: 'JOB_NOT_FOUND' }); return; }
+    if (job.amount_paid <= 0) {
+      res.status(400).json({ error: 'No payment collected yet', code: 'NO_PAYMENT' });
+      return;
+    }
+    job.remitted_to_admin = true;
+    job.remitted_at       = new Date();
+    await job.save();
+    res.json({ job });
+  } catch (err) {
+    res.status(500).json({ error: err.message, code: 'SERVER_ERROR' });
+  }
+}
+
 module.exports = {
   createJob, listJobs, getJob,
   saveInspection,
@@ -576,6 +618,7 @@ module.exports = {
   addPart,
   completeJob,
   recordPayment,
+  remitPayment,
   getInvoice, getInvoicePdf,
   deleteJob,
 };

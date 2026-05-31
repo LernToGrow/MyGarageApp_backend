@@ -9,6 +9,7 @@ const {
   addPart,
   completeJob,
   recordPayment,
+  remitPayment,
   getInvoice, getInvoicePdf,
   deleteJob,
 } = require('../controllers/job.controller');
@@ -36,6 +37,7 @@ router.post('/:id/parts',                 requirePermission('edit_job'), addPart
 router.delete('/:id/parts/:partIndex',    requirePermission('edit_job'), removePart);
 router.patch('/:id/complete',             requirePermission('edit_job'), completeJob);
 router.post('/:id/payment',               requirePermission('add_billing'), recordPayment);
+router.patch('/:id/remit',                requirePermission('view_billing'), remitPayment);
 
 // Invoice
 router.get('/:id/invoice',     requirePermission('view_billing'), getInvoice);

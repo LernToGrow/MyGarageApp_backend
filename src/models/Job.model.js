@@ -68,6 +68,9 @@ const JobSchema = new mongoose.Schema({
   amount_paid:    { type: Number, default: 0 },
   balance_due:    { type: Number, default: 0 },
   paid_at:        { type: Date },
+  collected_by:      { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  remitted_to_admin: { type: Boolean, default: false },
+  remitted_at:       { type: Date },
 
   created_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   created_at: { type: Date, default: Date.now },

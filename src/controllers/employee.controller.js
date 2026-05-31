@@ -1,12 +1,17 @@
+const crypto = require('crypto');
 const User = require('../models/User.model');
 const Job  = require('../models/Job.model');
 
 const ALL_PERMISSIONS = [
   'add_job', 'edit_job', 'delete_job',
-  'add_inventory', 'edit_inventory',
-  'view_billing', 'add_billing',
+  'manage_customers',
   'add_employee', 'edit_employee',
-  'view_reports', 'manage_customers',
+  'add_inventory', 'edit_inventory',
+  'add_billing', 'view_billing',
+  'view_reports',
+  'manage_services',
+  'manage_settings',
+  'manage_garage',
 ];
 
 // GET /api/employees
@@ -54,7 +59,15 @@ async function inviteEmployee(req, res) {
       invited_by:  req.user._id,
     });
 
-    res.status(201).json({ employee });
+    const invite_token = crypto.randomBytes(32).toString('hex');
+    employee.reset_token         = invite_token;
+    employee.reset_token_expires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    await employee.save();
+
+    const baseUrl   = process.env.FRONTEND_URL || 'http://localhost:5173';
+    const inviteUrl = `${baseUrl}/set-password?token=${invite_token}&phone=${encodeURIComponent(employee.phone)}`;
+
+    res.status(201).json({ employee, inviteUrl });
   } catch (err) {
     res.status(500).json({ error: err.message, code: 'SERVER_ERROR' });
   }
@@ -147,7 +160,10 @@ async function getPerformance(req, res) {
       assigned_to: employee._id,
       status:      { $in: ['done', 'paid', 'closed'] },
       end_time:    { $gte: start, $lte: now },
-    });
+    })
+      .populate('customer_id', 'name')
+      .populate('bike_id', 'make model plate_number')
+      .sort({ end_time: -1 });
 
     const jobs_completed        = jobs.length;
     const total_duration        = jobs.reduce((s, j) => s + (j.duration_minutes || 0), 0);
@@ -159,18 +175,19 @@ async function getPerformance(req, res) {
     ).length;
     const late_count  = jobs_completed - on_time_count;
     const on_time_rate = jobs_completed
-      ? `${Math.round((on_time_count / jobs_completed) * 100)}%`
-      : 'N/A';
+      ? on_time_count / jobs_completed
+      : 0;
 
     res.json({
       employee,
       period,
       jobs_completed,
       avg_duration_minutes,
-      total_revenue_generated,
+      revenue: total_revenue_generated,
       on_time_count,
       late_count,
       on_time_rate,
+      jobs,
     });
   } catch (err) {
     res.status(500).json({ error: err.message, code: 'SERVER_ERROR' });

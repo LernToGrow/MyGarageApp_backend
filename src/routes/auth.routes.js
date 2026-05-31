@@ -2,7 +2,7 @@ const express = require('express');
 const multer  = require('multer');
 const rateLimit = require('express-rate-limit');
 const {
-  register, login, forgotPassword, resetPassword,
+  register, login, forgotPassword, resetPassword, setInvitePassword,
   getMe, updateMe, updateProfile, updateGarage, removeGalleryPhoto,
 } = require('../controllers/auth.controller');
 const { verifyToken } = require('../middleware/auth.middleware');
@@ -21,8 +21,9 @@ const loginLimiter = rateLimit({
 // Public routes
 router.post('/register',        register);
 router.post('/login',           loginLimiter, login);
-router.post('/forgot-password', forgotPassword);
-router.post('/reset-password',  resetPassword);
+router.post('/forgot-password',      forgotPassword);
+router.post('/reset-password',       resetPassword);
+router.post('/set-invite-password',  setInvitePassword);
 
 // Protected routes
 router.get('/me',           verifyToken, getMe);

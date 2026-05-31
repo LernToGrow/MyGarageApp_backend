@@ -14,13 +14,16 @@ async function getSummary(req, res) {
 
     const todayQuery = { garage_id, created_at: { $gte: todayStart, $lte: todayEnd } };
 
+    const liveStatuses = ['received', 'inspecting', 'estimated', 'in_progress'];
+
     const [
       active_jobs,
       done_jobs,
       revenueAgg,
       duesAgg,
+      live_jobs,
     ] = await Promise.all([
-      Job.countDocuments({ garage_id, status: { $in: ['received', 'inspecting', 'estimated', 'in_progress'] } }),
+      Job.countDocuments({ garage_id, status: { $in: liveStatuses } }),
       Job.countDocuments({ ...todayQuery, status: { $in: ['done', 'paid', 'closed'] } }),
       Job.aggregate([
         { $match: { garage_id, paid_at: { $gte: todayStart, $lte: todayEnd } } },
@@ -30,6 +33,12 @@ async function getSummary(req, res) {
         { $match: { garage_id, payment_status: { $in: ['pending', 'partial'] }, status: { $nin: ['received'] } } },
         { $group: { _id: null, total: { $sum: '$balance_due' } } },
       ]),
+      Job.find({ garage_id, status: { $in: liveStatuses } })
+        .sort({ created_at: -1 })
+        .limit(10)
+        .populate('customer_id', 'name phone')
+        .populate('bike_id', 'make model plate_number year')
+        .select('job_number status customer_id bike_id created_at'),
     ]);
 
     res.json({
@@ -37,6 +46,7 @@ async function getSummary(req, res) {
       done_jobs_today:    done_jobs,
       today_revenue:      revenueAgg[0]?.total    || 0,
       total_pending_dues: duesAgg[0]?.total        || 0,
+      live_jobs,
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -71,14 +81,17 @@ async function getMonthly(req, res) {
     const monthStart = rangeStart;
     const monthEnd   = rangeEnd;
 
-    const [revenueAgg, jobStats, duesAgg] = await Promise.all([
-      // Revenue split by payment mode
+    const [revenueAgg, jobStats, duesAgg, collectorAgg] = await Promise.all([
+      // Revenue split by payment mode (paid + partial with money collected)
       Job.aggregate([
-        { $match: { garage_id, payment_status: 'paid', paid_at: { $gte: monthStart, $lte: monthEnd } } },
+        { $match: { garage_id, $or: [
+          { payment_status: 'paid',    paid_at:    { $gte: monthStart, $lte: monthEnd } },
+          { payment_status: 'partial', updated_at: { $gte: monthStart, $lte: monthEnd }, amount_paid: { $gt: 0 } },
+        ]}},
         { $group: {
-            _id:             '$payment_mode',
-            collected:       { $sum: '$amount_paid' },
-            count:           { $sum: 1 },
+            _id:       '$payment_mode',
+            collected: { $sum: '$amount_paid' },
+            count:     { $sum: 1 },
         }},
       ]),
       // Job timing stats (done + paid + closed jobs)
@@ -104,6 +117,18 @@ async function getMonthly(req, res) {
         { $match: { garage_id, payment_status: { $in: ['pending', 'partial'] } } },
         { $group: { _id: null, total: { $sum: '$balance_due' } } },
       ]),
+      // Revenue breakdown by collector (employee who recorded the payment)
+      Job.aggregate([
+        { $match: { garage_id, $or: [
+          { payment_status: 'paid',    paid_at:    { $gte: monthStart, $lte: monthEnd } },
+          { payment_status: 'partial', updated_at: { $gte: monthStart, $lte: monthEnd }, amount_paid: { $gt: 0 } },
+        ]}},
+        { $group: { _id: '$collected_by', collected: { $sum: '$amount_paid' }, count: { $sum: 1 } } },
+        { $lookup: { from: 'users', localField: '_id', foreignField: '_id', as: 'user' } },
+        { $unwind: { path: '$user', preserveNullAndEmptyArrays: true } },
+        { $project: { _id: 1, name: { $ifNull: ['$user.name', 'Unknown'] }, collected: 1, count: 1 } },
+        { $sort: { collected: -1 } },
+      ]),
     ]);
 
     const cashEntry   = revenueAgg.find((r) => r._id === 'cash')   || { collected: 0, count: 0 };
@@ -125,6 +150,7 @@ async function getMonthly(req, res) {
       jobs_on_time:              stats.on_time_count,
       avg_job_duration_minutes:  avg_duration,
       on_time_rate,
+      collector_breakdown: collectorAgg,
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -179,19 +205,24 @@ async function getPayments(req, res) {
     const limit     = Math.min(50, parseInt(req.query.limit) || 20);
     const skip      = (page - 1) * limit;
 
-    const match = { garage_id, amount_paid: { $gt: 0 } };
+    const match = { garage_id, $or: [{ amount_paid: { $gt: 0 } }, { payment_status: { $in: ['pending', 'partial'] } }] };
 
     if (req.query.from && req.query.to) {
       const from = new Date(req.query.from); from.setHours(0, 0, 0, 0);
       const to   = new Date(req.query.to);   to.setHours(23, 59, 59, 999);
-      match.paid_at = { $gte: from, $lte: to };
+      match.$and = [{ $or: [
+        { payment_status: 'paid',    paid_at:    { $gte: from, $lte: to } },
+        { payment_status: 'partial', updated_at: { $gte: from, $lte: to } },
+      ]}];
     } else if (req.query.year && req.query.month !== undefined) {
-      const y = parseInt(req.query.year);
-      const m = parseInt(req.query.month);
-      match.paid_at = {
-        $gte: new Date(y, m, 1),
-        $lte: new Date(y, m + 1, 0, 23, 59, 59, 999),
-      };
+      const y   = parseInt(req.query.year);
+      const m   = parseInt(req.query.month);
+      const from = new Date(y, m, 1);
+      const to   = new Date(y, m + 1, 0, 23, 59, 59, 999);
+      match.$and = [{ $or: [
+        { payment_status: 'paid',    paid_at:    { $gte: from, $lte: to } },
+        { payment_status: 'partial', updated_at: { $gte: from, $lte: to } },
+      ]}];
     }
 
     const [payments, total] = await Promise.all([
@@ -201,7 +232,8 @@ async function getPayments(req, res) {
         .limit(limit)
         .populate('customer_id', 'name phone')
         .populate('bike_id', 'make model plate_number')
-        .select('job_number customer_id bike_id status amount_paid balance_due payment_mode payment_status paid_at total_amount'),
+        .populate('collected_by', 'name')
+        .select('job_number customer_id bike_id status amount_paid balance_due payment_mode payment_status paid_at total_amount collected_by remitted_to_admin remitted_at'),
       Job.countDocuments(match),
     ]);
 

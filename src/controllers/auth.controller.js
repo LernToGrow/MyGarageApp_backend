@@ -69,14 +69,18 @@ async function register(req, res) {
 // POST /api/auth/login
 async function login(req, res) {
   try {
-    const { phone, password } = req.body;
+    const { phone: rawPhone, password } = req.body;
 
-    if (!phone || !password) {
+    if (!rawPhone || !password) {
       res.status(400).json({ error: 'phone and password are required', code: 'CREDENTIALS_REQUIRED' });
       return;
     }
 
-    const user = await User.findOne({ phone });
+    // Match phone stored as +91xxx, 91xxx, or plain digits
+    const digits = rawPhone.replace(/^\+?91/, '');
+    const user = await User.findOne({
+      phone: { $in: [digits, `+91${digits}`, `91${digits}`] },
+    });
     if (!user || !user.is_active) {
       res.status(401).json({ error: 'Invalid credentials', code: 'INVALID_CREDENTIALS' });
       return;
@@ -287,6 +291,44 @@ async function removeGalleryPhoto(req, res) {
   }
 }
 
+// POST /api/auth/set-invite-password
+async function setInvitePassword(req, res) {
+  try {
+    const { phone, token, new_password } = req.body;
+
+    if (!phone || !token || !new_password) {
+      res.status(400).json({ error: 'phone, token and new_password are required', code: 'FIELDS_REQUIRED' });
+      return;
+    }
+
+    if (new_password.length < 6) {
+      res.status(400).json({ error: 'Password must be at least 6 characters', code: 'PASSWORD_TOO_SHORT' });
+      return;
+    }
+
+    const user = await User.findOne({
+      phone,
+      reset_token: token,
+      reset_token_expires: { $gt: new Date() },
+      password_hash: { $exists: false },
+    });
+
+    if (!user) {
+      res.status(400).json({ error: 'Invalid or expired invite link', code: 'INVITE_TOKEN_INVALID' });
+      return;
+    }
+
+    user.password_hash       = await bcrypt.hash(new_password, 10);
+    user.reset_token         = undefined;
+    user.reset_token_expires = undefined;
+    await user.save();
+
+    res.json({ message: 'Password set. You can now log in.' });
+  } catch (err) {
+    res.status(500).json({ error: err.message, code: 'SERVER_ERROR' });
+  }
+}
+
 function _userPayload(user) {
   return {
     _id:         user._id,
@@ -300,6 +342,6 @@ function _userPayload(user) {
 }
 
 module.exports = {
-  register, login, forgotPassword, resetPassword,
+  register, login, forgotPassword, resetPassword, setInvitePassword,
   getMe, updateMe, updateProfile, updateGarage, removeGalleryPhoto,
 };
